@@ -1,135 +1,99 @@
-# SRE & DevOps Interview Prep — 6 Years Experience
-> Complete guide covering Docker, Kubernetes, GKE, Jenkins, Git/GitHub, Prometheus, Grafana, Datadog, and GCP services.
+# DevOps & SRE Interview Preparation Guide
+> Chethan H M | Senior DevOps/SRE Engineer | 6.2 Years Experience
+> Bangalore, India | chethangowdahm318@gmail.com
 
 ---
 
-## Folder Structure
+## About This Repository
 
-```
-interview-prep/
-├── README.md                  ← You are here (overview + master workflow)
-├── 01-docker.md               ← Docker deep dive
-├── 02-kubernetes.md           ← Kubernetes deep dive
-├── 03-gke.md                  ← Google Kubernetes Engine
-├── 04-jenkins.md              ← Jenkins CI/CD
-├── 05-git-github.md           ← Git & GitHub workflows
-├── 06-prometheus-grafana.md   ← Prometheus + Grafana monitoring
-├── 07-datadog.md              ← Datadog observability
-├── 08-gcp-services.md         ← Key GCP services for SRE/DevOps
-├── 09-end-to-end-workflow.md  ← Full E2E workflow walkthrough
-└── 10-sre-concepts.md         ← SRE principles, SLOs, SLAs, incident mgmt
-```
+Complete interview preparation material for Senior DevOps and SRE roles.
+Each tool has its own folder with: core concepts, interview Q&A, scenario-based questions, and real-world examples.
+
+**Target**: Senior DevOps/SRE Engineer roles (6+ years experience)
+**Coverage**: All tools and technologies from my resume
 
 ---
 
-## Master Architecture Diagram
+## Repository Structure
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         DEVELOPER WORKSTATION                               │
-│   Code Editor  →  git commit  →  git push  →  GitHub Pull Request          │
-└──────────────────────────────┬──────────────────────────────────────────────┘
-                               │  Webhook trigger
-                               ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          CI/CD LAYER (Jenkins)                              │
-│                                                                             │
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌─────────┐ │
-│  │  Checkout│→  │  Build   │→  │   Test   │→  │  Docker  │→  │  Push   │ │
-│  │   Code   │   │(compile) │   │(unit/int)│   │  Build   │   │ to GCR  │ │
-│  └──────────┘   └──────────┘   └──────────┘   └──────────┘   └─────────┘ │
-└──────────────────────────────┬──────────────────────────────────────────────┘
-                               │  Deploy trigger
-                               ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                     CONTAINER REGISTRY (GCR / Artifact Registry)            │
-│              docker images tagged with git SHA / version                    │
-└──────────────────────────────┬──────────────────────────────────────────────┘
-                               │  kubectl apply / helm upgrade
-                               ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    KUBERNETES CLUSTER (GKE)                                 │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  CONTROL PLANE (Master)                                             │   │
-│  │  API Server │ etcd │ Scheduler │ Controller Manager                 │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                     │
-│  │   Node 1     │  │   Node 2     │  │   Node 3     │                     │
-│  │  ┌────────┐  │  │  ┌────────┐  │  │  ┌────────┐  │                     │
-│  │  │Pod(app)│  │  │  │Pod(app)│  │  │  │Pod(app)│  │                     │
-│  │  └────────┘  │  │  └────────┘  │  │  └────────┘  │                     │
-│  │  ┌────────┐  │  │  ┌────────┐  │  │  ┌────────┐  │                     │
-│  │  │kubelet │  │  │  │kubelet │  │  │  │kubelet │  │                     │
-│  │  │kube-px │  │  │  │kube-px │  │  │  │kube-px │  │                     │
-│  │  └────────┘  │  │  └────────┘  │  │  └────────┘  │                     │
-│  └──────────────┘  └──────────────┘  └──────────────┘                     │
-│                                                                             │
-│  Services: LoadBalancer │ Ingress (nginx/GCE) │ HPA │ PDB                  │
-│  Storage:  PersistentVolumes │ ConfigMaps │ Secrets                         │
-└──────────────────────────────┬──────────────────────────────────────────────┘
-                               │  Metrics & Logs
-                               ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                     OBSERVABILITY LAYER                                     │
-│                                                                             │
-│  ┌──────────────────────┐     ┌──────────────────────┐                     │
-│  │   PROMETHEUS STACK   │     │      DATADOG           │                   │
-│  │  ┌────────────────┐  │     │  ┌──────────────────┐  │                   │
-│  │  │  Prometheus    │  │     │  │  Datadog Agent   │  │                   │
-│  │  │  (scrapes /    │  │     │  │  (DaemonSet)     │  │                   │
-│  │  │   metrics)     │  │     │  └────────┬─────────┘  │                   │
-│  │  └───────┬────────┘  │     │           │ sends to    │                   │
-│  │          │            │     │  ┌────────▼─────────┐  │                   │
-│  │  ┌───────▼────────┐  │     │  │  Datadog Cloud   │  │                   │
-│  │  │  Alertmanager  │  │     │  │  (APM, Logs,     │  │                   │
-│  │  └───────┬────────┘  │     │  │   Dashboards,    │  │                   │
-│  │          │            │     │  │   Alerts)        │  │                   │
-│  │  ┌───────▼────────┐  │     │  └──────────────────┘  │                   │
-│  │  │    Grafana     │  │     └──────────────────────────┘                 │
-│  │  │  (Dashboards)  │  │                                                   │
-│  │  └────────────────┘  │                                                   │
-│  └──────────────────────┘                                                   │
-│                                                                             │
-│  Cloud Logging (GCP) │ Cloud Monitoring │ Error Reporting                   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                               │  Alerts
-                               ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                     INCIDENT MANAGEMENT                                     │
-│   PagerDuty / OpsGenie → On-call Engineer → Runbook → Postmortem           │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+### Tool-Specific Folders
+
+| Folder | Contents |
+|---|---|
+| [Kubernetes/](./Kubernetes/) | Core concepts, 16+ interview Q&A, 8 production scenarios, real-world examples |
+| [Docker/](./Docker/) | Dockerfile best practices, networking, security, 12 interview Q&A |
+| [Terraform/](./Terraform/) | IaC concepts, state management, 12 interview Q&A, CI/CD integration |
+| [ArgoCD/](./ArgoCD/) | GitOps principles, sync strategies, RBAC, real-world scenarios |
+| [Jenkins/](./Jenkins/) | Declarative pipelines, K8s agents, shared libraries, interview Q&A |
+| [GitHub-Actions/](./GitHub-Actions/) | Workflows, OIDC, caching, reusable workflows, interview Q&A |
+| [AWS/](./AWS/) | Core services, VPC, IAM, EKS, cost optimization, interview Q&A |
+| [GCP/](./GCP/) | GKE, Workload Identity, Cloud Run, production Terraform setup |
+| [Ansible/](./Ansible/) | Playbooks, roles, vault, idempotency, interview Q&A |
+| [Monitoring-Observability/](./Monitoring-Observability/) | Prometheus, Grafana, Datadog, SLOs, PromQL, alerting |
+| [Nginx-Linux-Bash/](./Nginx-Linux-Bash/) | Nginx config, Linux troubleshooting, Bash scripting |
+
+### Interview Preparation Folder
+
+| File | Contents |
+|---|---|
+| [01-HR-and-behavioral-questions.md](./Interview-Preparation/01-HR-and-behavioral-questions.md) | Tell me about yourself, STAR stories, salary negotiation, pre-interview checklist |
+| [02-mock-technical-interview-modern-questions.md](./Interview-Preparation/02-mock-technical-interview-modern-questions.md) | Full mock interview with model answers, system design, GitOps, Platform Engineering |
+| [03-SRE-principles-and-system-design.md](./Interview-Preparation/03-SRE-principles-and-system-design.md) | SRE principles, incident management, system design examples, quick-reference numbers |
 
 ---
 
-## Quick Reference — Tool Purpose
+## Key Topics Covered
 
-| Tool             | Layer         | Primary Purpose                                      |
-|-----------------|---------------|------------------------------------------------------|
-| Git             | SCM           | Version control, branching, history                  |
-| GitHub          | SCM           | Code hosting, PRs, code review, Actions              |
-| Docker          | Container     | Package app + deps into portable image               |
-| Kubernetes      | Orchestration | Run, scale, self-heal containers at scale            |
-| GKE             | Managed K8s   | Google-managed K8s control plane on GCP              |
-| Jenkins         | CI/CD         | Automate build, test, deploy pipelines               |
-| Prometheus      | Monitoring    | Pull-based metrics collection and alerting           |
-| Grafana         | Visualization | Dashboards on top of Prometheus/other data sources   |
-| Datadog         | Observability | APM, logs, metrics, tracing in SaaS platform         |
-| GCP             | Cloud         | Infrastructure: GKE, GCS, CloudSQL, PubSub, etc.     |
+### Kubernetes
+- Architecture (control plane, worker nodes, etcd)
+- All core objects (Pod, Deployment, StatefulSet, DaemonSet, Service, Ingress)
+- Networking (CNI, NetworkPolicy, DNS)
+- Scheduling (taints, affinity, resource management)
+- Autoscaling (HPA, VPA, KEDA, Cluster Autoscaler)
+- RBAC, Secrets management, Health probes
+- Production scenarios with full solutions
+
+### GitOps & CI/CD
+- ArgoCD: sync strategies, ApplicationSets, RBAC, hooks
+- Jenkins: declarative pipelines, K8s agents, shared libraries
+- GitHub Actions: OIDC auth, caching, matrix builds, environment protection
+- GitOps vs traditional CI/CD tradeoffs
+
+### Cloud (AWS + GCP)
+- AWS: VPC, EKS, IAM/IRSA, S3, RDS, monitoring
+- GCP: GKE Autopilot, Workload Identity, Cloud Run, Terraform setup
+- Cost optimization strategies
+- Security best practices
+
+### Monitoring & Observability
+- Prometheus: PromQL, alerting rules, ServiceMonitor
+- Grafana: dashboards, RED/USE methods
+- Datadog: APM, SLO tracking, monitors
+- SLI/SLO/SLA/Error budgets
+- Distributed tracing
 
 ---
 
-## Study Order
+## Study Plan
 
-1. `05-git-github.md` → Foundation for everything
-2. `01-docker.md` → Build artifacts
-3. `04-jenkins.md` → Automate the pipeline
-4. `02-kubernetes.md` → Run in production
-5. `03-gke.md` → GCP-specific K8s
-6. `06-prometheus-grafana.md` → Monitoring
-7. `07-datadog.md` → Observability platform
-8. `08-gcp-services.md` → Cloud ecosystem
-9. `09-end-to-end-workflow.md` → Tie it all together
-10. `10-sre-concepts.md` → SRE mindset & interviews
+**Week 1**: Core tools (Kubernetes, Docker, Terraform)
+**Week 2**: Cloud platforms (AWS, GCP) + ArgoCD + GitOps
+**Week 3**: CI/CD (Jenkins, GitHub Actions) + Monitoring
+**Week 4**: Interview preparation + mock interviews + behavioral
+
+**Daily practice**: Pick one scenario from any folder and explain it aloud as you would in an interview.
+
+---
+
+## Quick Tips for Interview Success
+
+1. **Be specific**: Use numbers and real examples from your experience at Vendasta/Altruist
+2. **Show depth**: Mention alternatives and tradeoffs — this demonstrates senior thinking
+3. **Think aloud**: For system design, narrate your thinking process
+4. **Admit gaps gracefully**: 'I haven't used X directly, but I'd approach it like Y'
+5. **Use STAR method**: Situation, Task, Action, Result for behavioral questions
+6. **Ask smart questions**: Prepare 3-4 questions that show strategic thinking
+
+---
+
+**Good luck, Chethan! You have 6.2 years of real production experience — trust it.**
