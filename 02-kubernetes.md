@@ -467,3 +467,205 @@ kubectl describe pod <name>    # look at Events section
 kubectl get nodes               # check node status
 kubectl describe node <node>    # check allocatable resources
 ```
+
+---
+
+## Pod Lifecycle — State Machine
+
+```
+                         kubectl apply / scheduler assigns pod to node
+                                        │
+                                        ▼
+                              ┌──────────────────┐
+                              │     PENDING      │
+                              │ (scheduled, image │
+                              │  pulling, init   │
+                              │  containers)     │
+                              └────────┬─────────┘
+                          ┌───────────┴────────────┐
+                 image pull fails              all containers
+                 node out of resources         started
+                          │                        │
+                          ▼                        ▼
+                ┌─────────────────┐      ┌──────────────────┐
+                │  (still Pending)│      │     RUNNING      │
+                │  ImagePullBack  │      │  (at least one   │
+                │  Off/ErrImage   │      │   container up)  │
+                └─────────────────┘      └────────┬─────────┘
+                                          ┌───────┴───────┐
+                                    all containers    container
+                                    exit code 0       crashes /
+                                    restartPolicy=    OOMKilled
+                                    Never             │
+                                          │           ▼
+                                          │   ┌───────────────┐
+                                          │   │  (Restarting) │
+                                          │   │ CrashLoopBack │
+                                          │   │ Off if > 5    │
+                                          │   │ restarts      │
+                                          │   └───────────────┘
+                                          ▼
+                              ┌──────────────────────┐
+                              │      SUCCEEDED        │
+                              │  (all containers      │
+                              │   exited with 0)      │
+                              └──────────────────────┘
+
+                              ┌──────────────────────┐
+                              │       FAILED          │
+                              │  (at least one        │
+                              │   container non-0     │
+                              │   exit, no restart)   │
+                              └──────────────────────┘
+
+                              ┌──────────────────────┐
+                              │      UNKNOWN          │
+                              │  (node unreachable,   │
+                              │   no heartbeat)       │
+                              └──────────────────────┘
+```
+
+---
+
+## HPA — Feedback Control Loop
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    HPA CONTROL LOOP (every 15 seconds)                   │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  HPA Controller                                                  │    │
+│  │                                                                  │    │
+│  │  1. COLLECT metrics from metrics-server (or custom metrics API)  │    │
+│  │     current CPU: 350m across 3 pods = 116m avg per pod          │    │
+│  │                                                                  │    │
+│  │  2. CALCULATE desired replicas:                                  │    │
+│  │     desiredReplicas = ceil(current * currentMetric/targetMetric) │    │
+│  │     = ceil(3 * 116/70) = ceil(4.97) = 5                         │    │
+│  │                                                                  │    │
+│  │  3. APPLY scale constraints:                                     │    │
+│  │     min(max(desiredReplicas, minReplicas), maxReplicas)          │    │
+│  │     = min(max(5, 2), 20) = 5                                     │    │
+│  │                                                                  │    │
+│  │  4. SCALE: kubectl scale deployment/myapp --replicas=5           │    │
+│  │                                                                  │    │
+│  │  5. COOLDOWN: wait scaleUpStabilizationWindow (default 0s)      │    │
+│  │              wait scaleDownStabilizationWindow (default 5min)    │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                │                           ▲                             │
+│                │ scale                     │ metrics                     │
+│                ▼                           │                             │
+│  ┌───────────────────────┐    ┌────────────────────────────────────┐    │
+│  │  Deployment           │    │  metrics-server                    │    │
+│  │  replicas: 3 → 5      │    │  (aggregates kubelet stats)        │    │
+│  │  ┌─────┐┌─────┐┌─────┐│   │  or                                │    │
+│  │  │Pod 1││Pod 2││Pod 3││   │  Prometheus Adapter (custom metric) │    │
+│  │  └─────┘└─────┘└─────┘│   │  or Datadog Cluster Agent          │    │
+│  │  ┌─────┐┌─────┐       │   └────────────────────────────────────┘    │
+│  │  │Pod 4││Pod 5│ NEW   │                                              │
+│  │  └─────┘└─────┘       │                                              │
+│  └───────────────────────┘                                              │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Scale-down protection:
+  5 minutes of sustained low usage before scaling down (prevents flapping)
+  Can tune: --horizontal-pod-autoscaler-downscale-stabilization=5m
+```
+
+---
+
+## RBAC — Permission Evaluation
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              RBAC AUTHORIZATION FLOW                                     │
+│                                                                          │
+│  Request: kubectl get pods -n production                                 │
+│      │                                                                   │
+│      │ Who is making this request?                                       │
+│      ▼                                                                   │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  AUTHENTICATION (who are you?)                                   │   │
+│  │  ├─ User certificate → extracted from kubeconfig                 │   │
+│  │  ├─ ServiceAccount token → pod calling API server                │   │
+│  │  └─ OIDC token → cloud IAM identity                              │   │
+│  └──────────────────────────────────┬───────────────────────────────┘   │
+│                                     │ identity verified                  │
+│                                     ▼                                    │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  AUTHORIZATION (are you allowed?)                                │   │
+│  │                                                                  │   │
+│  │  API Server checks all applicable RoleBindings/ClusterRoleBindings│  │
+│  │                                                                  │   │
+│  │  Subject = ServiceAccount "myapp-sa" in namespace "production"   │   │
+│  │      │                                                           │   │
+│  │      ▼                                                           │   │
+│  │  RoleBinding "myapp-binding" in namespace "production"?          │   │
+│  │      └─► Role "pod-reader"                                       │   │
+│  │              rules:                                               │   │
+│  │              - apiGroups: [""]                                    │   │
+│  │                resources: ["pods"]                                │   │
+│  │                verbs: ["get","list","watch"]  ← MATCH!           │   │
+│  │      │                                                           │   │
+│  │      └─► ALLOWED ✓                                               │   │
+│  │                                                                  │   │
+│  │  If no match found → DENIED (default deny)                       │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+│  Scope hierarchy:                                                        │
+│  ClusterRole + ClusterRoleBinding  → cluster-wide access                 │
+│  ClusterRole + RoleBinding         → namespace-scoped access             │
+│  Role + RoleBinding                → namespace-scoped access             │
+│  Role + ClusterRoleBinding         → NOT VALID                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Rolling Update — State Machine
+
+```
+TRIGGER: kubectl set image deployment/myapp app=myapp:v2
+
+Initial state: ReplicaSet-v1 (3 pods running)
+
+STEP 1: Create new ReplicaSet-v2
+┌─────────────────────────────────────────────────────────────┐
+│  RS-v1: 3 pods [●v1][●v1][●v1]    RS-v2: 0 pods            │
+│  Service: → v1, v1, v1                                      │
+└─────────────────────────────────────────────────────────────┘
+
+STEP 2: Scale up RS-v2 by 1 (maxSurge=1)
+┌─────────────────────────────────────────────────────────────┐
+│  RS-v1: 3 pods [●v1][●v1][●v1]    RS-v2: 1 pod [◐v2]      │
+│  Service: → v1, v1, v1  (v2 pod not ready yet)             │
+└─────────────────────────────────────────────────────────────┘
+
+STEP 3: v2 pod passes readiness probe → join Service
+┌─────────────────────────────────────────────────────────────┐
+│  RS-v1: 3 pods [●v1][●v1][●v1]    RS-v2: 1 pod [●v2]      │
+│  Service: → v1, v1, v1, v2                                  │
+└─────────────────────────────────────────────────────────────┘
+
+STEP 4: Scale down RS-v1 by 1 (maxUnavailable=0 — no loss)
+┌─────────────────────────────────────────────────────────────┐
+│  RS-v1: 2 pods [●v1][●v1]          RS-v2: 1 pod [●v2]      │
+│  Service: → v1, v1, v2                                      │
+└─────────────────────────────────────────────────────────────┘
+
+STEP 5-6: Repeat (scale up v2, then scale down v1)
+┌─────────────────────────────────────────────────────────────┐
+│  RS-v1: 1 pod  [●v1]               RS-v2: 3 pods [●v2×3]   │
+│  Service: → v1, v2, v2, v2                                  │
+└─────────────────────────────────────────────────────────────┘
+
+STEP 7: Final state
+┌─────────────────────────────────────────────────────────────┐
+│  RS-v1: 0 pods (kept for rollback!)  RS-v2: 3 pods [●v2×3] │
+│  Service: → v2, v2, v2              ← ALL traffic on v2     │
+└─────────────────────────────────────────────────────────────┘
+
+If something goes wrong at ANY step:
+  kubectl rollout undo deployment/myapp
+  → RS-v2 scales down, RS-v1 scales back up (fast, no rebuild)
+```

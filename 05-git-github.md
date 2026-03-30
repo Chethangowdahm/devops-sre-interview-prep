@@ -363,3 +363,210 @@ git checkout release/1.2 && git cherry-pick <fix-sha>
 
 **Q: What's the difference between `git reset` and `git revert`?**
 > `reset` moves the branch pointer backward, rewriting history (dangerous for shared branches). `revert` creates a new commit that undoes the changes, preserving history (safe for shared branches). For production hotfixes on main, always use `revert` to maintain audit trail.
+
+---
+
+## Git PR Workflow — End to End
+
+```
+Developer Workstation                 GitHub                      CI System
+─────────────────────                 ──────                      ─────────
+
+  git checkout -b feature/xyz
+         │
+         │ write code + tests
+         │
+  git push origin feature/xyz ──────► Branch created on remote
+                                             │
+                                      PR opened (web/CLI)
+                                             │
+                                      ┌──────▼──────────────┐
+                                      │  CODEOWNERS notified │
+                                      │  Auto-reviewers added│
+                                      └──────┬──────────────┘
+                                             │ webhook
+                                             ▼
+                                                           Jenkins/GH Actions
+                                                           ┌──────────────┐
+                                                           │  CI Pipeline  │
+                                                           │  - go test   │
+                                                           │  - lint      │
+                                                           │  - docker    │
+                                                           │    build     │
+                                                           │  - trivy scan│
+                                                           └──────┬───────┘
+                                                                  │
+                                             ┌────────────────────┘
+                                             │ status check result
+                                             ▼
+                                      ┌─────────────────────┐
+                                      │  Status Checks       │
+                                      │  ✓ CI passed         │
+                                      │  ✓ Tests pass        │
+                                      │  ✓ No CVEs           │
+                                      │  ✗ Review pending    │
+                                      └──────┬──────────────┘
+                                             │
+                                      Reviewer looks at diff
+                                             │
+                              ┌──────────────┼──────────────┐
+                          Changes           LGTM          Request
+                          requested    (approves PR)      changes
+                              │              │              │
+                              ▼              ▼              │
+                         Dev fixes    ┌──────────────┐      │
+                         pushes again │  All checks  │ ◄────┘
+                         (re-triggers │  green +     │
+                          CI)         │  approved    │
+                                      └──────┬───────┘
+                                             │ Merge button enabled
+                                             │
+                                      ┌──────▼───────────────┐
+                                      │  MERGE TO MAIN        │
+                                      │  (squash/merge/rebase)│
+                                      └──────┬───────────────┘
+                                             │ webhook
+                                             ▼
+                                                           CD Pipeline
+                                                           ┌──────────────┐
+                                                           │  Deploy to   │
+                                                           │  staging →   │
+                                                           │  prod        │
+                                                           └──────────────┘
+```
+
+---
+
+## Git Branching Strategies — Visual Comparison
+
+```
+══════════════════════════════════════════════════════════════════════════════
+ GITFLOW (complex, traditional)
+══════════════════════════════════════════════════════════════════════════════
+
+ main    ────●─────────────────────────────────────────●──────────► (v1.2)
+              \                                        /
+ release/1.2   ●───●───●─────────────────────────────●
+                                                     /
+ develop ──────●────────────────────────────────────●──────────────►
+               │        │              │
+ feature/auth  ●──●──●──┘              │
+                                       │
+ feature/pay            ●──●──●──●─────┘
+
+ hotfix/bug    (branches from main, merges to main AND develop)
+
+ Problems: Long-lived branches → massive merge conflicts
+           Complex, slow CI, devs out of sync for days
+
+
+══════════════════════════════════════════════════════════════════════════════
+ TRUNK-BASED DEVELOPMENT (modern, recommended)
+══════════════════════════════════════════════════════════════════════════════
+
+ main    ──●──●──●──●──●──●──●──●──●──●──●──●──►  (always deployable)
+            │  │     │     │     │     │
+           PR  PR   PR    PR    PR    PR
+          (hrs)(hrs)(hrs) (hrs)         (short-lived, merged same day)
+
+ feature flags: hide unfinished code behind a flag in main
+
+ Benefits:
+   ✓ No merge conflicts (frequent small merges)
+   ✓ CI always runs on latest code
+   ✓ Deploy any time
+   ✓ Bugs caught immediately
+
+
+══════════════════════════════════════════════════════════════════════════════
+ GITHUB FLOW (simple, cloud-native)
+══════════════════════════════════════════════════════════════════════════════
+
+ main    ──●────────────────────────────●──●──────────────────────►
+            \                          /    \
+ feature     ●──●──●──●──●──●──●──●──●      ●──●──●──●──►
+              (branch → PR → review → merge → auto deploy to prod)
+```
+
+---
+
+## Git Internal Object Model
+
+```
+$ git log --oneline
+a3f9c12 feat: add payment retry
+b7e2109 fix: null pointer in auth
+
+Each commit is a chain of objects in .git/objects/:
+
+Commit object a3f9c12:
+┌─────────────────────────────────┐
+│  tree:   d8e3a4f                │ ──► points to root Tree object
+│  parent: b7e2109                │ ──► previous commit
+│  author: Chethan <...>          │
+│  date:   2026-03-30             │
+│  msg:    feat: add payment retry│
+└─────────────────────────────────┘
+         │
+         ▼
+Tree object d8e3a4f:
+┌─────────────────────────────────┐
+│  blob 9f3a2b1  main.go          │ ──► file content (blob)
+│  blob 4c7e8d2  go.mod           │
+│  tree 2a1c9f3  cmd/             │ ──► subdirectory (another tree)
+│  tree 8b4d7e1  pkg/             │
+└─────────────────────────────────┘
+
+Blob object 9f3a2b1:
+┌─────────────────────────────────┐
+│  (raw file content of main.go)  │
+└─────────────────────────────────┘
+
+Branch "main" = just a file containing commit SHA:
+  .git/refs/heads/main → a3f9c12
+
+HEAD = pointer to current branch:
+  .git/HEAD → ref: refs/heads/main
+
+Key insight: git never CHANGES objects, only ADDS new ones.
+  "Undo" = just moving branch pointers, not deleting data.
+  This is why reflog can recover "lost" commits.
+```
+
+---
+
+## Merge vs Rebase vs Squash — Visual
+
+```
+BEFORE (feature branch has 3 commits):
+
+ main    ──A──B──C
+               \
+ feature         D──E──F
+
+
+MERGE (--no-ff):
+ Creates a merge commit M, preserves all history
+ main    ──A──B──C────────M
+               \          /
+ feature         D──E──F──
+ History: A,B,C,D,E,F,M  ← shows exactly what happened
+ Use when: you want full audit trail
+
+
+REBASE:
+ Re-applies D,E,F on top of C, creating D',E',F' (new SHAs)
+ main    ──A──B──C──D'──E'──F'
+ feature is gone (linear history)
+ History: A,B,C,D',E',F'  ← clean, linear
+ Use when: keeping history readable
+ WARNING: never rebase shared/public branches
+
+
+SQUASH MERGE:
+ Combines D+E+F into single commit S
+ main    ──A──B──C──S
+ feature is gone
+ History: A,B,C,S  ← one commit per feature
+ Use when: feature branches are messy, want clean main
+```

@@ -359,3 +359,148 @@ Error budget alerts:
 
 **Q: How would you monitor a deployment rollout with Datadog?**
 > Use Datadog Deployment Tracking (send deploy events via API). Overlay events on dashboards. Set up monitors with alert recovery evaluation window that accounts for the rollout. Use APM to compare P99 latency and error rate between old version and new version. Set up rollback automation: if error rate > X after deploy, trigger Jenkins job to rollback.
+
+---
+
+## Metrics, Traces, Logs — Correlation Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              THREE PILLARS OF OBSERVABILITY (CORRELATED)                 │
+│                                                                          │
+│                         USER REQUEST                                     │
+│                              │                                           │
+│                    POST /api/checkout                                    │
+│                              │                                           │
+│          ┌───────────────────┼───────────────────┐                      │
+│          │                   │                   │                      │
+│          ▼                   ▼                   ▼                      │
+│   ┌─────────────┐   ┌──────────────────┐   ┌──────────────┐            │
+│   │   METRICS   │   │     TRACES       │   │     LOGS     │            │
+│   │             │   │                  │   │              │            │
+│   │ http_request│   │ Trace ID:        │   │ {            │            │
+│   │ _total      │   │ abc123def456     │   │  "level":    │            │
+│   │ {status=200}│   │                  │   │  "info",     │            │
+│   │ +1          │   │ api-gateway      │   │  "msg":      │            │
+│   │             │   │ [0ms ──── 45ms]  │   │  "checkout   │            │
+│   │ http_request│   │   │              │   │   started",  │            │
+│   │ _duration   │   │   ├─ payment-svc │   │  "trace_id": │            │
+│   │ _seconds    │   │   │  [5ms──38ms] │   │  "abc123",   │            │
+│   │ {p99=0.045} │   │   │    │         │   │  "span_id":  │            │
+│   │             │   │   │    ├─ db call│   │  "xyz789",   │            │
+│   │ (What is    │   │   │    │ [5ms-20ms│   │  "user_id":  │            │
+│   │  happening  │   │   │    └─ stripe │   │  "u_456",    │            │
+│   │  at scale)  │   │   │      [18ms] │   │  "amount":   │            │
+│   │             │   │   └─ notif-svc  │   │  99.99        │            │
+│   │             │   │      [40ms-45ms]│   │ }            │            │
+│   └──────┬──────┘   └───────┬─────────┘   └──────┬───────┘            │
+│          │                  │                     │                     │
+│          │    CORRELATION   │                     │                     │
+│          └──────────────────┴─────────────────────┘                    │
+│                             │                                           │
+│          Datadog links them via: trace_id = "abc123def456"              │
+│                                                                         │
+│  Workflow in incident:                                                  │
+│  1. Grafana/Datadog metric spike → "P99 latency > 1s at 14:32"         │
+│  2. Click "View traces" → filter traces during that window             │
+│  3. Find slow trace → expand → "db call took 800ms" (the culprit)     │
+│  4. Click "View logs" → exact log lines for that trace_id              │
+│  5. Root cause: missing DB index on orders.user_id                     │
+│                                                                         │
+│  Without correlation: hours of grepping logs separately                 │
+│  With correlation: minutes to root cause                                │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Datadog Agent — Data Collection Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│          DATADOG AGENT DATA COLLECTION (per node)                        │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │                  DATADOG AGENT (DaemonSet Pod)                    │   │
+│  │                                                                  │   │
+│  │  ┌────────────────────────────────────────────────────────────┐  │   │
+│  │  │  METRICS COLLECTOR                                         │  │   │
+│  │  │  Every 15s:                                                │  │   │
+│  │  │  ├─ kubelet API → container CPU, memory, disk I/O          │  │   │
+│  │  │  ├─ /proc, /sys → host-level metrics                       │  │   │
+│  │  │  ├─ Docker socket → container metadata                     │  │   │
+│  │  │  └─ Autodiscovery → scrape annotated pods' /metrics        │  │   │
+│  │  └────────────────────────────────────────────────────────────┘  │   │
+│  │                                                                  │   │
+│  │  ┌────────────────────────────────────────────────────────────┐  │   │
+│  │  │  LOG COLLECTOR                                             │  │   │
+│  │  │  Continuously:                                             │  │   │
+│  │  │  ├─ Tail /var/log/containers/*.log (all container logs)    │  │   │
+│  │  │  ├─ Parse JSON logs → extract attributes                   │  │   │
+│  │  │  ├─ Apply pipeline rules (Grok patterns)                   │  │   │
+│  │  │  └─ Tag with: service, env, version, pod_name, node        │  │   │
+│  │  └────────────────────────────────────────────────────────────┘  │   │
+│  │                                                                  │   │
+│  │  ┌────────────────────────────────────────────────────────────┐  │   │
+│  │  │  APM TRACE RECEIVER (port 8126)                            │  │   │
+│  │  │  App sends traces via DD_AGENT_HOST env var                │  │   │
+│  │  │  ├─ Receive spans from instrumented apps                   │  │   │
+│  │  │  ├─ Apply sampling rules                                   │  │   │
+│  │  │  ├─ Aggregate → service metrics                            │  │   │
+│  │  │  └─ Forward to Datadog intake                              │  │   │
+│  │  └────────────────────────────────────────────────────────────┘  │   │
+│  │                                                                  │   │
+│  │  ┌────────────────────────────────────────────────────────────┐  │   │
+│  │  │  PROCESS AGENT                                             │  │   │
+│  │  │  ├─ List all running processes (/proc)                     │  │   │
+│  │  │  └─ Map processes to containers                            │  │   │
+│  │  └────────────────────────────────────────────────────────────┘  │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                              │                                           │
+│                              │ HTTPS (443) — encrypted                   │
+│                              │ batch sends every 10-15s                  │
+│                              ▼                                           │
+│                    app.datadoghq.com                                     │
+│              (Datadog intake endpoints)                                  │
+│         metrics-intake  │  logs-intake  │  trace-intake                  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Datadog Monitor — Alert Flow
+
+```
+ Datadog Cloud (evaluates every 1 min):
+
+ Monitor query: avg(last_5m):avg:trace.http.request.errors{service:payment} > 0.01
+
+  Time:    T-5   T-4   T-3   T-2   T-1   T-0
+  Value:   0.002 0.003 0.015 0.018 0.012 0.014
+
+  State:   OK    OK    ALERT ALERT ALERT ALERT
+                       │
+                       │ threshold crossed
+                       ▼
+             ┌─────────────────────────────────────┐
+             │  Monitor transitions: OK → ALERT    │
+             │  Notification sent:                  │
+             │  ├─ @pagerduty-payment-team          │
+             │  ├─ @slack-payment-alerts            │
+             │  └─ @webhook-auto-scale-trigger      │
+             └─────────────────────────────────────┘
+                       │
+        ┌──────────────┼─────────────────┐
+        ▼              ▼                 ▼
+   PagerDuty       Slack msg         Webhook
+   incident        #payment-alerts   → Lambda/Cloud Function
+   created         with:             → auto-scale pods
+                   - current value   → trigger runbook
+                   - graph snapshot
+                   - link to trace
+                   - runbook URL
+
+  Alert resolves when value drops below threshold for recovery window:
+  Monitor transitions: ALERT → OK
+  "RESOLVED" notification sent to same channels
+```

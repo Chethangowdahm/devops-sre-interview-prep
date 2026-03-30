@@ -433,3 +433,150 @@ Prometheus (2 weeks local) ──remote_write──► Thanos Sidecar
 
 **Q: How do you handle Prometheus scalability for 1000+ pods?**
 > Use Prometheus Operator with sharding. Use federated Prometheus (global pulls from regional). Use Thanos or Cortex for horizontal scaling and long-term storage. Use recording rules to reduce cardinality. Avoid high-cardinality labels (don't use user_id as a label).
+
+---
+
+## Alertmanager — Routing Tree
+
+```
+Alert fires from Prometheus
+         │
+         ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                        ALERTMANAGER                                     │
+│                                                                        │
+│  STEP 1: RECEIVE                                                       │
+│    Incoming alert: {alertname="HighErrorRate", severity="critical",    │
+│                     service="payment", team="backend"}                 │
+│         │                                                              │
+│         ▼                                                              │
+│  STEP 2: DEDUPLICATION                                                 │
+│    Is this the same alert (same labels) already active?                │
+│    YES → update existing, don't re-route                               │
+│    NO  → new alert, continue routing                                   │
+│         │                                                              │
+│         ▼                                                              │
+│  STEP 3: INHIBITION CHECK                                              │
+│    Is there an active alert that inhibits this one?                    │
+│    e.g., NodeDown inhibits PodCrashLooping (same node)                 │
+│    YES → silence this alert (redundant)                                │
+│    NO  → continue                                                      │
+│         │                                                              │
+│         ▼                                                              │
+│  STEP 4: SILENCE CHECK                                                 │
+│    Does this alert match any active silence?                           │
+│    (silences created during maintenance windows)                       │
+│    YES → suppress notification                                         │
+│    NO  → continue                                                      │
+│         │                                                              │
+│         ▼                                                              │
+│  STEP 5: ROUTING TREE                                                  │
+│                                                                        │
+│    Root Route (receiver: "default-slack")                              │
+│         │                                                              │
+│         ├─► match: severity=critical ──────────────────────────┐      │
+│         │         receiver: pagerduty                          │      │
+│         │         continue: true ◄── also sends to next match  │      │
+│         │                                                       │      │
+│         ├─► match: team=backend ─────────────────────────────┐ │      │
+│         │         receiver: backend-slack (#backend-alerts)   │ │      │
+│         │                                                     │ │      │
+│         ├─► match: team=sre ───────────────────────────────┐  │ │      │
+│         │         receiver: sre-slack (#sre-alerts)         │  │ │      │
+│         │                                                   │  │ │      │
+│         └─► default (no match) ─────────────────────────┐  │  │ │      │
+│                   receiver: default-slack (#alerts)      │  │  │ │      │
+│                                                          ▼  ▼  ▼ ▼      │
+│  STEP 6: GROUPING                                                      │
+│    group_by: [alertname, namespace, service]                           │
+│    group_wait: 30s   ← batch alerts arriving within 30s                │
+│    group_interval: 5m ← send updates every 5min if still firing        │
+│    repeat_interval: 4h ← re-alert every 4h if unresolved               │
+│         │                                                              │
+│         ▼                                                              │
+│  STEP 7: NOTIFY                                                        │
+│    PagerDuty ← WAKE SOMEONE UP (critical)                              │
+│    Slack     ← #backend-alerts, #sre-alerts                            │
+└────────────────────────────────────────────────────────────────────────┘
+         │
+         │ alert resolves (prometheus stops firing)
+         ▼
+    Send "RESOLVED" notification to same receivers
+    (if send_resolved: true in receiver config)
+```
+
+---
+
+## Alert Lifecycle — States
+
+```
+ Prometheus evaluates rule every [interval] seconds:
+
+ Time ──────────────────────────────────────────────────────────────►
+
+ Rule: error_rate > 0.01
+ Value:  0.005  0.015  0.018  0.014  0.013  0.005  0.003  0.002
+
+ State:  OK     PEND   PEND   PEND   FIRING FIRING FIRING OK
+                │←────── for: 5m ──────►│
+                │                       │
+                │                       └── alert.state = "firing"
+                │                           Alertmanager notified
+                │                           PagerDuty pages on-call
+                └── rule first exceeded (pending starts)
+                    No notification yet (for: 5m prevents false positives)
+
+ PENDING: rule exceeded but not yet for the full "for" duration
+ FIRING:  rule exceeded for full duration → Alertmanager notified
+ OK:      rule no longer exceeded → RESOLVED notification sent
+
+ Why "for" duration matters:
+   Without "for": 1 spike → immediate page (noisy, false positives)
+   With "for: 5m": sustained problem → page (actionable)
+```
+
+---
+
+## Grafana Dashboard — Data Flow
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                    GRAFANA DATA FLOW                                   │
+│                                                                       │
+│  Browser opens dashboard                                              │
+│         │                                                             │
+│         ▼                                                             │
+│  ┌─────────────────────────────────────────────────────────────┐     │
+│  │  Grafana Server                                             │     │
+│  │                                                             │     │
+│  │  1. Load dashboard JSON (from DB or ConfigMap)             │     │
+│  │  2. Parse each panel's query + time range                  │     │
+│  │  3. For each panel:                                        │     │
+│  │                                                             │     │
+│  │     Panel: "Request Rate"                                  │     │
+│  │     Query: rate(http_requests_total[5m])                   │     │
+│  │     DataSource: Prometheus                                 │     │
+│  │              │                                              │     │
+│  │              │ HTTP GET /api/v1/query_range                │     │
+│  │              │  ?query=rate(http_requests_total[5m])       │     │
+│  │              │  &start=now-6h&end=now&step=30s             │     │
+│  │              ▼                                              │     │
+│  │     ┌──────────────────────────────────────────┐           │     │
+│  │     │  Prometheus TSDB                          │           │     │
+│  │     │  - Find matching time series              │           │     │
+│  │     │  - Apply rate() function                 │           │     │
+│  │     │  - Return [{timestamp, value}, ...]       │           │     │
+│  │     └──────────────────────────────────────────┘           │     │
+│  │              │                                              │     │
+│  │              ▼                                              │     │
+│  │     Grafana renders: line chart, bar chart, stat, etc.     │     │
+│  │     Applies: thresholds, colors, units (req/s, ms, %)      │     │
+│  └─────────────────────────────────────────────────────────────┘     │
+│                                                                       │
+│  Multiple data sources can be queried in one dashboard:               │
+│  Panel A → Prometheus    (infrastructure metrics)                    │
+│  Panel B → Loki          (logs count)                                │
+│  Panel C → CloudSQL      (via Grafana plugin)                        │
+│  Panel D → Datadog       (via Datadog data source plugin)            │
+└──────────────────────────────────────────────────────────────────────┘
+```
